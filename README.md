@@ -6,8 +6,8 @@ A bidirectional 3-node mesh network using ESP-NOW for emergency alerts with Ackn
 
 ```mermaid
 flowchart LR
-    A[Hazard Node 02 <br> ESP32 + OLED] <-->|ESP-NOW <br> (SOS / ACK)| B(Relay <br> ESP8266)
-    B <-->|ESP-NOW <br> (SOS / ACK)| C[Base Station <br> ESP32]
+    A["Hazard Node 02 <br> ESP32 + OLED"] <-->|"ESP-NOW <br> (SOS / ACK)"| B("Relay <br> ESP8266")
+    B <-->|"ESP-NOW <br> (SOS / ACK)"| C["Base Station <br> ESP32"]
 ```
 
 ## Features
