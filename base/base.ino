@@ -2,66 +2,69 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 
+#define BASE_ID 1
 #define WIFI_CHANNEL 1
 
-// =====================================================
-// PACKET STRUCTURE
-// =====================================================
+// RELAY A
+uint8_t relayAMAC[] =
+{
+  0x2C, 0xF4, 0x32, 0x30, 0xCD, 0xD2
+};
+
+// RELAY B
+uint8_t relayBMAC[] =
+{
+  0x8C, 0xAA, 0xB5, 0x6B, 0x08, 0xAA
+};
 
 struct MeshPacket
 {
+  uint16_t messageID;
+
   uint8_t source;
   uint8_t destination;
   uint8_t type;
   uint8_t priority;
   uint8_t hopCount;
   uint8_t ttl;
+
   char event[20];
 };
 
-// =====================================================
-// HELPER: ADD PEER DYNAMICALLY
-// =====================================================
-void addPeerIfNeeded(const uint8_t *mac)
-{
-  if (!esp_now_is_peer_exist(mac))
-  {
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, mac, 6);
-    peerInfo.channel = WIFI_CHANNEL;
-    peerInfo.encrypt = false;
-    
-    if (esp_now_add_peer(&peerInfo) == ESP_OK) {
-      Serial.println("ADDED RELAY MAC AS PEER");
-    } else {
-      Serial.println("FAILED TO ADD PEER");
-    }
-  }
-}
+uint16_t lastMessageID = 0;
+
 
 // =====================================================
-// RECEIVE CALLBACK
+// RECEIVE PACKET
 // =====================================================
 
-void onDataRecv(const uint8_t *mac, const uint8_t *data, int len)
+void onDataRecv(
+  const uint8_t *mac,
+  const uint8_t *data,
+  int len
+)
 {
   if (len != sizeof(MeshPacket))
   {
-    Serial.println();
     Serial.println("INVALID PACKET SIZE");
     return;
   }
 
   MeshPacket packet;
-  memcpy(&packet, data, sizeof(MeshPacket));
 
-  // If this is an ACK (Type 2), drop it (Base shouldn't receive ACKs)
-  if (packet.type == 2) return;
+  memcpy(
+    &packet,
+    data,
+    sizeof(MeshPacket)
+  );
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("          EMERGENCY ALERT");
+  Serial.println("          PACKET AT BASE");
   Serial.println("========================================");
+
+  Serial.print("MESSAGE ID   : ");
+  Serial.println(packet.messageID);
 
   Serial.print("SOURCE       : ");
   Serial.println(packet.source);
@@ -86,48 +89,154 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len)
 
   Serial.println("----------------------------------------");
 
-  if (packet.priority == 0)
+
+  // ===================================================
+  // ONLY PROCESS EMERGENCY PACKETS
+  // ===================================================
+
+  if (
+    packet.type != 1 &&
+    packet.type != 3
+  )
   {
-    Serial.println("CRITICAL PRIORITY ALERT");
+    Serial.println("NOT AN EMERGENCY PACKET");
+    Serial.println("========================================");
+    return;
   }
 
-  if (strcmp(packet.event, "FIRE") == 0)
+
+  if (
+    packet.destination != BASE_ID
+  )
+  {
+    Serial.println("PACKET NOT FOR BASE");
+    Serial.println("========================================");
+    return;
+  }
+
+
+  // ===================================================
+  // DUPLICATE PROTECTION
+  // ===================================================
+
+  if (
+    packet.messageID == lastMessageID
+  )
+  {
+    Serial.println("DUPLICATE PACKET DETECTED");
+
+    Serial.println("ALREADY PROCESSED");
+
+    Serial.println("NO SECOND ALERT GENERATED");
+
+    Serial.println("========================================");
+
+    return;
+  }
+
+
+  lastMessageID = packet.messageID;
+
+
+  // ===================================================
+  // EMERGENCY
+  // ===================================================
+
+  if (packet.type == 1)
+  {
+    Serial.println("SOS EMERGENCY DETECTED");
+  }
+
+  if (packet.type == 3)
   {
     Serial.println("FIRE EMERGENCY DETECTED");
   }
 
-  Serial.println("----------------------------------------");
   Serial.println("ALERT RECEIVED AT BASE");
-  
-  // =================================================
-  // SEND ACK BACK TO HAZARD NODE (VIA RELAY)
-  // =================================================
 
-  Serial.println("SENDING ACKNOWLEDGEMENT...");
 
-  // Dynamically add the relay MAC as a peer if it hasn't been added yet
-  addPeerIfNeeded(mac);
+  // ===================================================
+  // CREATE ACK
+  // ===================================================
 
-  MeshPacket ackPacket;
-  ackPacket.source = 1; // Base ID
-  ackPacket.destination = packet.source; // Destination is the original sender (Hazard)
-  ackPacket.type = 2; // Type 2 = ACK
-  ackPacket.priority = packet.priority;
-  ackPacket.hopCount = 0;
-  ackPacket.ttl = 5;
-  strcpy(ackPacket.event, "ACK");
+  MeshPacket ack;
 
-  // We send the ACK back to the MAC address that delivered the packet (the Relay)
-  esp_err_t result = esp_now_send(mac, (uint8_t *)&ackPacket, sizeof(ackPacket));
+  ack.messageID = packet.messageID;
 
-  if (result == ESP_OK) {
-    Serial.println("ACK DELIVERED TO RELAY");
-  } else {
-    Serial.println("FAILED TO SEND ACK");
+  ack.source = BASE_ID;
+
+  ack.destination = packet.source;
+
+  ack.type = 2;
+
+  ack.priority = packet.priority;
+
+  ack.hopCount = 0;
+
+  ack.ttl = 5;
+
+  strcpy(
+    ack.event,
+    "ACK"
+  );
+
+
+  // ===================================================
+  // SEND ACK THROUGH RELAY A
+  // ===================================================
+
+  Serial.println();
+  Serial.println("SENDING ACK THROUGH RELAY A...");
+
+  esp_err_t resultA = esp_now_send(
+    relayAMAC,
+    (uint8_t *)&ack,
+    sizeof(ack)
+  );
+
+  if (resultA == ESP_OK)
+  {
+    Serial.println("ACK SENT TO RELAY A");
   }
+  else
+  {
+    Serial.print("RELAY A ACK FAILED: ");
+    Serial.println(resultA);
+  }
+
+
+  // ===================================================
+  // SEND ACK THROUGH RELAY B
+  // ===================================================
+
+  Serial.println("SENDING ACK THROUGH RELAY B...");
+
+  esp_err_t resultB = esp_now_send(
+    relayBMAC,
+    (uint8_t *)&ack,
+    sizeof(ack)
+  );
+
+  if (resultB == ESP_OK)
+  {
+    Serial.println("ACK SENT TO RELAY B");
+  }
+  else
+  {
+    Serial.print("RELAY B ACK FAILED: ");
+    Serial.println(resultB);
+  }
+
+
+  Serial.println("----------------------------------------");
+
+  Serial.println("BASE CONFIRMED ALERT");
+
+  Serial.println("ACK PATHS ACTIVATED");
 
   Serial.println("========================================");
 }
+
 
 // =====================================================
 // SETUP
@@ -136,36 +245,120 @@ void onDataRecv(const uint8_t *mac, const uint8_t *data, int len)
 void setup()
 {
   Serial.begin(115200);
-  delay(1000);
+
+  delay(1500);
 
   WiFi.mode(WIFI_STA);
-  esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+  esp_wifi_set_channel(
+    WIFI_CHANNEL,
+    WIFI_SECOND_CHAN_NONE
+  );
+
+  delay(200);
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("          BASE STATION STARTING");
+  Serial.println("        SELF-HEALING BASE");
   Serial.println("========================================");
 
   Serial.print("BASE MAC: ");
-  Serial.println(WiFi.macAddress());
+  Serial.println(
+    WiFi.macAddress()
+  );
 
-  if (esp_now_init() != 0)
+  Serial.print("WIFI CHANNEL: ");
+  Serial.println(
+    WIFI_CHANNEL
+  );
+
+
+  if (
+    esp_now_init()
+    != ESP_OK
+  )
   {
     Serial.println("ESP-NOW INIT FAILED");
-    return;
+
+    while (true)
+    {
+      delay(1000);
+    }
   }
 
-  esp_now_register_recv_cb(onDataRecv);
-  Serial.println("ESP-NOW INITIALIZED");
-  Serial.println("BASE STATION READY");
+
+  // ===================================================
+  // RELAY A PEER
+  // ===================================================
+
+  esp_now_peer_info_t peerA = {};
+
+  memcpy(
+    peerA.peer_addr,
+    relayAMAC,
+    6
+  );
+
+  peerA.channel = WIFI_CHANNEL;
+
+  peerA.encrypt = false;
+
+
+  if (
+    esp_now_add_peer(&peerA)
+    != ESP_OK
+  )
+  {
+    Serial.println("RELAY A PEER FAILED");
+  }
+  else
+  {
+    Serial.println("RELAY A PEER ADDED");
+  }
+
+
+  // ===================================================
+  // RELAY B PEER
+  // ===================================================
+
+  esp_now_peer_info_t peerB = {};
+
+  memcpy(
+    peerB.peer_addr,
+    relayBMAC,
+    6
+  );
+
+  peerB.channel = WIFI_CHANNEL;
+
+  peerB.encrypt = false;
+
+
+  if (
+    esp_now_add_peer(&peerB)
+    != ESP_OK
+  )
+  {
+    Serial.println("RELAY B PEER FAILED");
+  }
+  else
+  {
+    Serial.println("RELAY B PEER ADDED");
+  }
+
+
+  esp_now_register_recv_cb(
+    onDataRecv
+  );
+
+
+  Serial.println();
+  Serial.println("BASE READY");
+  Serial.println("SELF-HEALING NETWORK READY");
   Serial.println("========================================");
 }
 
-// =====================================================
-// LOOP
-// =====================================================
 
 void loop()
 {
-  // Base Station continuously waits for packets
 }
